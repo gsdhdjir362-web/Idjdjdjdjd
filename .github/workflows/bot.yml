@@ -36,16 +36,17 @@ jobs:
                       prismarine-viewer@1.28.0 \
                       minecraft-data@3.63.0 \
                       vec3@0.1.8 \
-                      express@4.19.2
+                      express@4.19.2 \
+                      http-proxy@1.18.1
 
       - name: Start Vanilla Server
         run: |
           mkdir -p server
           cd server
-          # دریافت آخرین بیلد پایدار 1.20.4 به‌صورت داینامیک
-          LATEST_BUILD=$(curl -s https://api.papermc.io/v2/projects/paper/versions/1.20.4 | jq '.builds[-1]')
+          # نسخه 1.20.1 چون prismarine-viewer رسماً اینو ساپورت می‌کنه (1.20.4 مشکل‌ساز بود)
+          LATEST_BUILD=$(curl -s https://api.papermc.io/v2/projects/paper/versions/1.20.1 | jq '.builds[-1]')
           echo "Using Paper build: $LATEST_BUILD"
-          wget -q "https://api.papermc.io/v2/projects/paper/versions/1.20.4/builds/${LATEST_BUILD}/downloads/paper-1.20.4-${LATEST_BUILD}.jar" -O paper.jar
+          wget -q "https://api.papermc.io/v2/projects/paper/versions/1.20.1/builds/${LATEST_BUILD}/downloads/paper-1.20.1-${LATEST_BUILD}.jar" -O paper.jar
           echo "eula=true" > eula.txt
           cat > server.properties <<EOF
           server-port=25565
@@ -69,7 +70,7 @@ jobs:
             sleep 2
           done
 
-      - name: Create overlay (fullscreen button + vertical)
+      - name: Create overlay (mobile fullscreen + vertical)
         run: |
           mkdir -p public
           cat > public/overlay.html << 'OVERLAY'
@@ -79,42 +80,43 @@ jobs:
           <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
           <title>Bot Live</title>
           <style>
-            html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden;font-family:sans-serif}
-            iframe{border:0;width:100vw;height:100vh;display:block}
-            #fsBtn{position:fixed;top:10px;right:10px;z-index:9999;
-              background:rgba(0,0,0,0.7);color:#fff;border:2px solid #4af;
-              padding:10px 14px;border-radius:8px;font-size:14px;cursor:pointer;
+            html,body{margin:0;padding:0;height:100%;width:100%;background:#000;overflow:hidden;font-family:sans-serif}
+            iframe{border:0;width:100vw;height:100vh;display:block;background:#000}
+            #fsBtn{position:fixed;bottom:16px;right:16px;z-index:9999;
+              background:rgba(0,0,0,0.75);color:#fff;border:2px solid #4af;
+              padding:14px 18px;border-radius:10px;font-size:16px;cursor:pointer;
               -webkit-tap-highlight-color:transparent}
             #fsBtn:active{background:#4af}
-            #status{position:fixed;top:10px;left:10px;z-index:9999;
+            #status{position:fixed;top:8px;left:8px;z-index:9999;
               background:rgba(0,0,0,0.6);color:#0f0;padding:6px 10px;
               border-radius:6px;font-size:12px;font-family:monospace}
+            #reload{position:fixed;top:8px;right:8px;z-index:9999;
+              background:rgba(0,0,0,0.6);color:#ff0;padding:6px 10px;
+              border-radius:6px;font-size:12px;cursor:pointer}
           </style>
           </head><body>
             <div id="status">🟢 LIVE</div>
+            <div id="reload">🔄</div>
             <button id="fsBtn">⛶ Fullscreen</button>
-            <iframe id="game" src="/viewer" allow="fullscreen"></iframe>
+            <iframe id="game" src="/viewer/" allow="fullscreen"></iframe>
           <script>
             const btn = document.getElementById('fsBtn');
             const frame = document.getElementById('game');
+            const reload = document.getElementById('reload');
+
             btn.addEventListener('click', async () => {
               try {
                 const el = document.documentElement;
                 if (el.requestFullscreen) await el.requestFullscreen();
                 else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-                // قفل جهت روی موبایل (اگر پشتیبانی شه)
                 if (screen.orientation && screen.orientation.lock) {
                   try { await screen.orientation.lock('portrait'); } catch(e){}
                 }
               } catch(e) { alert('Fullscreen not supported: '+e.message); }
             });
-            // رفرش خودکار آیفریم اگر قطع شد
-            let lastReload = Date.now();
-            frame.addEventListener('error', () => {
-              if (Date.now() - lastReload > 5000) {
-                lastReload = Date.now();
-                frame.src = '/viewer?t=' + Date.now();
-              }
+
+            reload.addEventListener('click', () => {
+              frame.src = '/viewer/?t=' + Date.now();
             });
           </script>
           </body></html>
@@ -130,27 +132,47 @@ jobs:
           const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
           const Vec3 = require('vec3').Vec3;
           const express = require('express');
+          const http = require('http');
+          const httpProxy = require('http-proxy');
           const path = require('path');
 
-          // ---------- سرور overlay جداگانه روی پورت 8080 ----------
+          // ---------- overlay + پراکسی WebSocket-aware روی پورت 8080 ----------
           const overlayApp = express();
-          overlayApp.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'overlay.html')));
-          // پراکسی به viewer روی پورت 3000
-          const http = require('http');
-          overlayApp.use('/viewer', (req, res) => {
-            const opts = {
-              host: '127.0.0.1', port: 3000,
-              path: req.url === '/' ? '/' : req.url,
-              method: req.method, headers: req.headers
-            };
-            const proxy = http.request(opts, pr => {
-              res.writeHead(pr.statusCode, pr.headers);
-              pr.pipe(res, { end: true });
-            });
-            proxy.on('error', e => res.status(502).send('viewer offline: '+e.message));
-            req.pipe(proxy, { end: true });
+
+          // پراکسی به viewer روی 3000 (هم HTTP هم WebSocket)
+          const proxy = httpProxy.createProxyServer({
+            target: 'http://127.0.0.1:3000',
+            ws: true,
+            changeOrigin: true
           });
-          overlayApp.listen(8080, () => console.log('Overlay on :8080'));
+          proxy.on('error', (err, req, res) => {
+            try {
+              if (res && res.writeHead) { res.writeHead(502); res.end('viewer offline: ' + err.message); }
+            } catch (e) {}
+          });
+
+          // صفحه اصلی = overlay
+          overlayApp.get('/', (req, res) =>
+            res.sendFile(path.join(__dirname, 'public', 'overlay.html'))
+          );
+
+          // هر چیزی زیر /viewer رو (با حذف prefix) به viewer بفرست
+          overlayApp.use('/viewer', (req, res) => {
+            req.url = req.url || '/';
+            proxy.web(req, res);
+          });
+
+          // بقیه مسیرها (assetهایی که viewer از root می‌خواد) هم به viewer
+          overlayApp.use((req, res) => {
+            proxy.web(req, res);
+          });
+
+          const overlayServer = http.createServer(overlayApp);
+          // هندل WebSocket upgrade — این چیزیه که قبلاً نبود و باعث صفحه سیاه می‌شد
+          overlayServer.on('upgrade', (req, socket, head) => {
+            proxy.ws(req, socket, head);
+          });
+          overlayServer.listen(8080, () => console.log('[OVERLAY] up on :8080'));
 
           // ---------- ساخت بات ----------
           const bot = mineflayer.createBot({
@@ -170,12 +192,8 @@ jobs:
           function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
           // ---------- مدیریت خطا سراسری ----------
-          process.on('unhandledRejection', err => {
-            console.log('[UNHANDLED]', err.message);
-          });
-          process.on('uncaughtException', err => {
-            console.log('[UNCAUGHT]', err.message);
-          });
+          process.on('unhandledRejection', err => console.log('[UNHANDLED]', err.message));
+          process.on('uncaughtException', err => console.log('[UNCAUGHT]', err.message));
 
           bot.on('error', e => console.log('[BOT ERR]', e.message));
           bot.on('kicked', r => console.log('[KICKED]', r));
@@ -220,18 +238,18 @@ jobs:
             mcData = require('minecraft-data')(bot.version);
 
             const movements = new Movements(bot, mcData);
-            movements.canDig = true;        // برای speedrun لازمه
+            movements.canDig = true;
             movements.allow1by1towers = true;
             movements.allowParkour = true;
             movements.allowSprinting = true;
             bot.pathfinder.setMovements(movements);
 
-            // viewer — سبک برای موبایل
+            // viewer — حالت سوم‌شخص پایدارتره و کمتر صفحه سیاه میده
             try {
               mineflayerViewer(bot, {
                 port: 3000,
-                firstPerson: true,
-                viewDistance: 3,   // کمی بیشتر از 1 برای دید بهتر، ولی سبک
+                firstPerson: false,
+                viewDistance: 4,
                 antiAlias: false
               });
               console.log('[VIEWER] up on :3000');
@@ -242,7 +260,6 @@ jobs:
             startAutoEat();
             startAutoDefend();
 
-            // اجرای speedrun با مدیریت خطای هر مرحله
             await sleep(3000);
             await runSpeedrun();
           });
@@ -339,7 +356,6 @@ jobs:
             while (collected < count && explores < 10) {
               const block = bot.findBlock({ matching: ids, maxDistance: 48 });
               if (!block) {
-                // برای آهن/الماس به پایین برو
                 if (names.some(n => /iron|diamond|coal/.test(n))) {
                   await digDown(5);
                 } else {
@@ -379,7 +395,6 @@ jobs:
             if (bot.inventory.items().find(i => i.name === name)) return;
             const recipes = bot.recipesFor(item.id, null, 1, null);
             if (recipes.length) { await bot.craft(recipes[0], 1, null); return; }
-            // اگر نیاز به میز داشت:
             await craftItemAtTable(name);
           }
 
@@ -427,7 +442,6 @@ jobs:
             const item = bot.inventory.items().find(i => i.name === itemName);
             if (!item) throw new Error('no '+itemName);
             await bot.equip(item, 'hand');
-            // پیدا کردن یه بلوک جامد زیر پای بات برای ساخت روی اون
             const offsets = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[2,0,0],[0,0,2]];
             for (const [dx,dy,dz] of offsets) {
               const target = bot.entity.position.floored().offset(dx, dy, dz);
@@ -466,7 +480,6 @@ jobs:
               const amount = Math.min(ore.count, count);
               await furnace.putInput(ore.type, null, amount);
               await furnace.putFuel(fuel.type, null, Math.ceil(amount/8)+1);
-              // انتظار
               const start = Date.now();
               while (Date.now() - start < 90000) {
                 const out = furnace.outputItem();
@@ -503,7 +516,6 @@ jobs:
           // ---------- پورتال ندر ----------
           async function buildNetherPortal() {
             const base = bot.entity.position.floored().offset(2,0,0);
-            // ساخت یه پلتفرم ساده 4x5 از ابسیدین (frame)
             const frame = [
               [0,0,0],[1,0,0],[2,0,0],[3,0,0],
               [0,1,0],            [3,1,0],
@@ -511,7 +523,6 @@ jobs:
               [0,3,0],            [3,3,0],
               [0,4,0],[1,4,0],[2,4,0],[3,4,0]
             ];
-            // پیشنیاز: حداقل 10 ابسیدین داریم
             for (const [dx,dy,dz] of frame) {
               const pos = base.offset(dx,dy,dz);
               const at = bot.blockAt(pos);
@@ -519,7 +530,6 @@ jobs:
               const obs = bot.inventory.items().find(i => i.name === 'obsidian');
               if (!obs) throw new Error('out of obsidian');
               await bot.equip(obs,'hand');
-              // ref: بلوک زیر یا کنار
               let ref = bot.blockAt(pos.offset(0,-1,0));
               let face = new Vec3(0,1,0);
               if (!ref || ref.name === 'air') {
@@ -548,7 +558,7 @@ jobs:
             await new Promise((resolve,reject) => {
               const t = setTimeout(()=>reject(new Error('dim timeout')), 45000);
               const onDim = name => {
-                if (name.includes(target)) { clearTimeout(t); bot.off('login',onDim); bot.off('respawn',onDim); resolve(); }
+                if (name.includes(target)) { clearTimeout(t); resolve(); }
               };
               bot.on('respawn', () => onDim('minecraft:'+target));
             });
@@ -627,19 +637,22 @@ jobs:
         run: |
           node bot.js > bot.log 2>&1 &
           BOT_PID=$!
-          sleep 10
-          # تونل به پورت 8080 (overlay) نه 3000
+          echo "Waiting for bot spawn + viewer to come up..."
+          sleep 30
+          echo "----- bot.log so far -----"
+          cat bot.log
+          echo "--------------------------"
+          # تونل به 8080 (overlay با دکمه fullscreen)
           cloudflared tunnel --no-autoupdate --url http://localhost:8080 > cloudflared.log 2>&1 &
           CF_PID=$!
-          sleep 8
+          sleep 12
           TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' cloudflared.log | head -n1)
           echo ""
           echo "============================================="
-          echo "🔴 LIVE VIEW (with Fullscreen button):"
+          echo "🔴 LIVE VIEW (موبایل + دکمه Fullscreen):"
           echo "$TUNNEL_URL"
           echo "============================================="
           echo ""
-          # نگه‌داری زنده + لاگ زنده
           tail -f bot.log &
           wait $BOT_PID
           kill $CF_PID 2>/dev/null || true
