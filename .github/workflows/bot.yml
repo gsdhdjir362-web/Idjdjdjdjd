@@ -1,4 +1,4 @@
-name: Minecraft Bot Simulator
+name: Minecraft Bot Web Dashboard
 on: [workflow_dispatch]
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-      - name: Run Tunnel and Simulator Bot
+      - name: Run Tunnel and Dashboard Bot
         run: |
           echo "⚡ در حال راه‌اندازی تونل موقت کلودفلر..."
           cloudflared tunnel --url http://localhost:3000 2>&1 | grep --line-buffered -o "https://.*trycloudflare.com" > tunnel_link.txt &
@@ -35,7 +35,7 @@ jobs:
           echo "⏳ ۳ ثانیه صبر برای آماده‌سازی اولیه..."
           sleep 3
           
-          echo "🤖 استارت زدن سرور شبیه‌ساز و بات..."
+          echo "🤖 استارت زدن بات و داشبورد مانیتورینگ..."
           node bot.js &
           
           echo "⏳ ۵ ثانیه صبر برای فیکس شدن لینک..."
