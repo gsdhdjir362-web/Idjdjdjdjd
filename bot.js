@@ -1,4 +1,4 @@
-const mc = require('node-minecraft-protocol');
+const mc = require('minecraft-protocol');
 const mineflayer = require('mineflayer');
 const { pathfinder } = require('mineflayer-pathfinder');
 const { plugin: pvp } = require('mineflayer-pvp');
