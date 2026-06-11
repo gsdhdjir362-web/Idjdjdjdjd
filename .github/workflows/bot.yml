@@ -1,4 +1,4 @@
-name: Minecraft Bot Local Server
+name: Minecraft Bot Simulator
 on: [workflow_dispatch]
 
 jobs:
@@ -27,30 +27,19 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-      - name: Download & Configure Minecraft Server
+      - name: Run Tunnel and Simulator Bot
         run: |
-          echo "⬇️ در حال دانلود سرور رسمی ماینکرافت..."
-          wget -q https://launcher.mojang.com/v1/objects/1b553e2631a927c3437eeb313413b0881c940611/server.jar -O server.jar
-          
-          echo "⚙️ در حال پذیرفتن قوانین EULA و تنظیم آفلاین مود..."
-          echo "eula=true" > eula.txt
-          echo "online-mode=false" > server.properties
-          echo "difficulty=easy" >> server.properties
-          echo "spawn-monsters=true" >> server.properties
-
-      - name: Run Server, Tunnel, and Bot
-        run: |
-          echo "☕ در حال روشن کردن سرور ماینکرافت در پس‌زمینه..."
-          java -Xmx1024M -Xms1024M -jar server.jar nogui > /dev/null 2>&1 &
-          
           echo "⚡ در حال راه‌اندازی تونل موقت کلودفلر..."
           cloudflared tunnel --url http://localhost:3000 2>&1 | grep --line-buffered -o "https://.*trycloudflare.com" > tunnel_link.txt &
           
-          echo "⏳ ۱۵ ثانیه صبر برای آماده‌سازی کامل سرور و تونل..."
-          sleep 15
+          echo "⏳ ۳ ثانیه صبر برای آماده‌سازی اولیه..."
+          sleep 3
           
-          echo "🤖 استارت زدن بات ماینکرافت..."
+          echo "🤖 استارت زدن سرور شبیه‌ساز و بات..."
           node bot.js &
+          
+          echo "⏳ ۵ ثانیه صبر برای فیکس شدن لینک..."
+          sleep 5
           
           echo "=================================================="
           echo "🌐 آدرس موقت مانیتورینگ شما آماده است 👇"
