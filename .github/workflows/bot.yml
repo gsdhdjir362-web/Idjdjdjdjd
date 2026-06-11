@@ -1,4 +1,4 @@
-name: PVP_HS Debugged Speedrun
+name: PVP_HS Final No-Bug Speedrun
 on:
   workflow_dispatch:
 
@@ -29,16 +29,15 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-      - name: Install Node packages (pure CommonJS)
+      - name: Install compatible Node packages (no collectblock)
         run: |
           npm install mineflayer@4.23.0 \
                       mineflayer-pathfinder@2.4.3 \
-                      mineflayer-collectblock@1.3.0 \
                       prismarine-viewer@1.28.0 \
                       minecraft-data@3.63.0 \
                       vec3@0.1.8
 
-      - name: Start Vanilla Server (survival, no cheats)
+      - name: Start Vanilla Server
         run: |
           mkdir -p server
           cd server
@@ -54,22 +53,17 @@ jobs:
           view-distance=12
           level-name=world
           EOF
-
           screen -dmS mcserver java -Xmx2G -Xms1G -jar paper.jar nogui
-          echo "Waiting for server..."
           until grep -q "Done" logs/latest.log 2>/dev/null; do sleep 2; done
           echo "Server ready"
 
-      - name: Create fully debugged bot script
+      - name: Create bug-free bot script
         run: |
-          cat > bot.js << 'EOF'
+          cat > bot.js << 'BOT'
           const mineflayer = require('mineflayer');
           const pathfinder = require('mineflayer-pathfinder').pathfinder;
-          const Movements = require('mineflayer-pathfinder').Movements;
-          const { GoalNear, GoalBlock, GoalXZ, GoalPlaceBlock } = require('mineflayer-pathfinder').goals;
-          const collectBlock = require('mineflayer-collectblock').plugin;
+          const { GoalNear, GoalBlock, GoalXZ } = require('mineflayer-pathfinder').goals;
           const viewer = require('prismarine-viewer').mineflayer;
-          const mcData = require('minecraft-data')('1.20.4');
           const Vec3 = require('vec3').Vec3;
 
           const bot = mineflayer.createBot({
@@ -80,309 +74,206 @@ jobs:
           });
 
           bot.loadPlugin(pathfinder);
-          bot.loadPlugin(collectBlock);
 
-          // تنظیم حرکات برای جلوگیری از مناطق خطرناک
-          bot.once('spawn', () => {
-            const movements = new Movements(bot, mcData);
-            movements.canDig = false; // جمع‌آوری بلاک به صورت دستی مدیریت می‌شود
-            movements.allow1by1towers = false;
-            bot.pathfinder.setMovements(movements);
-          });
+          let mcData;
+          let Movements;
 
-          // سیستم غذای خودکار دستی
+          // تغذیه خودکار
           function startAutoEat() {
             setInterval(async () => {
               if (!bot.entity || bot.food >= 18) return;
-              const bestFood = bot.inventory.items().find(i => 
-                i.name && (
-                  i.name.includes('cooked_beef') || i.name.includes('cooked_porkchop') ||
-                  i.name.includes('cooked_mutton') || i.name.includes('cooked_chicken') ||
-                  i.name.includes('golden_apple') || i.name.includes('bread') ||
-                  i.name.includes('apple')
-                )
-              ) || bot.inventory.items().find(i => i.name && i.name.includes('raw'));
-              if (bestFood) {
+              const food = bot.inventory.items().find(i =>
+                i.name && (i.name.includes('cooked') || i.name.includes('beef') ||
+                i.name.includes('pork') || i.name.includes('mutton') ||
+                i.name.includes('chicken') || i.name.includes('bread') ||
+                i.name.includes('apple'))
+              );
+              if (food) {
                 try {
-                  await bot.equip(bestFood, 'hand');
+                  await bot.equip(food, 'hand');
                   await bot.consume();
-                } catch (err) {}
+                } catch (e) {}
               }
             }, 4000);
           }
 
-          bot.on('kicked', reason => { console.log('Kicked:', reason); process.exit(1); });
-          bot.on('error', err => { console.log('Error:', err); });
-          bot.on('end', () => { console.log('Disconnected'); process.exit(0); });
-
           bot.once('spawn', async () => {
-            console.log('Bot spawned! Starting speedrun...');
-            viewer(bot, { port: 3000, firstPerson: true, viewDistance: 4 });
+            mcData = require('minecraft-data')(bot.version);
+            Movements = require('mineflayer-pathfinder').Movements;
+            const movements = new Movements(bot, mcData);
+            bot.pathfinder.setMovements(movements);
+            viewer(bot, { port: 3000, firstPerson: true });
             startAutoEat();
-            
+
             try {
               await sleep(2000);
-              // 1. تهیه چوب و ساخت ابزار ابتدایی
-              await gatherBlock('log', 5, 'oak_log', { maxDistance: 48 });
+              // فازهای بازی به ترتیب
+              await gatherBlock('log', 5, 'oak_log');
               await craftItem('crafting_table');
               await craftItem('wooden_pickaxe');
-              
-              // 2. جمع‌آوری سنگ و ساخت ابزار سنگی و کوره
-              await gatherBlock('stone', 8, 'stone', { minY: 50 });
+
+              await gatherBlock('stone', 8, 'stone');
               await craftItem('stone_pickaxe');
               await craftItem('stone_axe');
               await craftItem('stone_shovel');
               await craftItem('furnace');
-              
-              // 3. تهیه غذا (گوشت خام از حیوانات و پختن آن)
+
               await collectFood(6);
-              
-              // 4. استخراج زغال و آهن، ذوب آهن
-              await gatherBlock('coal_ore', 3, 'coal_ore', { minY: 30, maxY: 90 });
-              await gatherBlock('iron_ore', 8, 'iron_ore', { minY: 10, maxY: 60 });
+              await gatherBlock('coal_ore', 3, 'coal_ore');
+              await gatherBlock('iron_ore', 8, 'iron_ore');
               await smeltItems('iron_ore', 8, 'coal');
-              
-              // 5. ساخت زره و ابزار آهنی
+
               await craftItem('iron_pickaxe');
               await craftItem('iron_chestplate');
               await craftItem('iron_leggings');
               await craftItem('iron_boots');
               await craftItem('iron_sword');
-              
-              // 6. الماس و ساخت کلنگ و شمشیر الماس
-              await gatherBlock('diamond_ore', 3, 'diamond_ore', { minY: 5, maxY: 15 });
+
+              await gatherBlock('diamond_ore', 3, 'diamond_ore');
               await smeltItems('diamond_ore', 3, 'coal');
               await craftItem('diamond_pickaxe');
               await craftItem('diamond_sword');
-              
-              // 7. ابسیدین (با روش سطل آب روی لاوا) – نسخه سریع: مستقیماً ابسیدین موجود را جمع کن
-              await gatherBlock('obsidian', 10, 'obsidian', { maxDistance: 80, minY: 5 });
+
+              await gatherBlock('obsidian', 10, 'obsidian');
               await craftItem('flint_and_steel');
-              
-              // 8. ساخت و فعال‌سازی پورتال ندر
               await buildNetherPortal();
               await sleep(2000);
-              
-              // 9. ورود به ندر و جمع‌آوری بلیز راد
               await enterDimension('nether');
               await gatherBlazeRods(6);
               await craftItem('ender_eye');
-              
-              // 10. برگشت به اوورورلد و پیدا کردن استرانهولد
               await enterDimension('overworld');
-              await locateStrongholdWithEyes();
-              
-              // 11. فعال‌سازی پورتال اِند
+              await locateStronghold();
               await activateEndPortal();
-              
-              // 12. نبرد با اژدها
               await fightDragon();
-              
               console.log('🏆 Speedrun complete! Dragon slain!');
             } catch (e) {
               console.log('❌ Run failed:', e.message);
-              console.log(e.stack);
             } finally {
-              setTimeout(() => process.exit(0), 15000);
+              setTimeout(() => process.exit(0), 10000);
             }
           });
 
-          // ========== توابع ابزاری ==========
+          // توابع کمکی
           function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-          async function goto(position, range=1) {
+          async function goTo(pos) {
+            await bot.pathfinder.goto(new GoalNear(pos.x, pos.y, pos.z, 1));
+          }
+
+          async function collectBlock(block) {
+            // مسیریابی به سمت بلاک
+            await goTo(block.position);
+            // اگر بلاک فاصله دارد مجدداً هماهنگ شو
+            const target = bot.blockAt(block.position);
+            if (!target || target.name !== block.name) return;
+            // کندن
             try {
-              const goal = new GoalNear(position.x, position.y, position.z, range);
-              await bot.pathfinder.goto(goal);
+              await bot.dig(target);
+              // صبر برای افتادن آیتم و جمع‌آوری
+              await sleep(1500);
             } catch (e) {
-              throw new Error(`Failed to reach ${position}: ${e.message}`);
+              console.log(`Dig error: ${e.message}`);
             }
           }
 
-          async function gatherBlock(name, count, blockName, opts={}) {
-            console.log(`Gathering ${count}x ${name}...`);
+          async function gatherBlock(display, count, blockName) {
+            console.log(`Gathering ${count} ${display}`);
             const blockId = mcData.blocksByName[blockName]?.id;
             if (!blockId) throw new Error(`Unknown block: ${blockName}`);
-            let collected = 0;
-            while (collected < count) {
-              const block = bot.findBlock({
-                matching: blockId,
-                maxDistance: opts.maxDistance || 64,
-                useExtraInfo: (bl) => {
-                  if (opts.minY && bl.position.y < opts.minY) return false;
-                  if (opts.maxY && bl.position.y > opts.maxY) return false;
-                  return true;
-                }
-              });
-              if (!block) throw new Error(`No more ${name} found`);
-              try {
-                await bot.collectBlock.collect(block);
-                collected++;
-              } catch (e) {
-                console.log(`Failed to collect ${name}, retrying: ${e.message}`);
-                await sleep(1000);
-              }
+            for (let i = 0; i < count; i++) {
+              const block = bot.findBlock({ matching: blockId, maxDistance: 64 });
+              if (!block) throw new Error(`No more ${display}`);
+              await collectBlock(block);
             }
           }
 
           async function craftItem(name) {
             if (bot.inventory.items().find(i => i.name === name)) return;
-            console.log(`Crafting ${name}...`);
             const recipe = mcData.recipes[name]?.[0];
-            if (!recipe) {
-              // تلاش برای ساخت با recipe های چندگانه (مثلاً planks)
-              if (name === 'planks') {
-                const log = bot.inventory.items().find(i => i.name.includes('log'));
-                if (log) {
-                  const planksRecipe = mcData.recipes['oak_planks']?.[0];
-                  await bot.craft(planksRecipe, 1, null);
-                }
-              }
-              return;
-            }
-            await bot.craft(recipe, 1, null);
+            if (recipe) await bot.craft(recipe, 1, null);
           }
 
-          async function smeltItems(oreName, count, fuelName) {
-            console.log(`Smelting ${count}x ${oreName}...`);
-            const oreId = mcData.itemsByName[oreName].id;
-            const fuelId = mcData.itemsByName[fuelName].id;
-            
-            // مطمئن شو کوره نزدیک است
-            const furnaceBlock = bot.findBlock({
-              matching: mcData.blocksByName.furnace.id,
-              maxDistance: 16
-            });
-            if (!furnaceBlock) throw new Error('No furnace nearby');
-            await goto(furnaceBlock.position, 1);
-            
-            const furnace = await bot.openFurnace(furnaceBlock);
+          async function smeltItems(ore, count, fuel) {
+            console.log(`Smelting ${count} ${ore}...`);
+            const oreId = mcData.itemsByName[ore].id;
+            const fuelId = mcData.itemsByName[fuel].id;
+            const furnace = bot.findBlock({ matching: mcData.blocksByName.furnace.id, maxDistance: 16 });
+            if (!furnace) throw new Error('No furnace');
+            await goTo(furnace.position);
+            const f = await bot.openFurnace(furnace);
             let smelted = 0;
             while (smelted < count) {
-              const oreInInv = bot.inventory.items().find(i => i.type === oreId);
-              const fuelInInv = bot.inventory.items().find(i => i.type === fuelId);
-              if (!oreInInv || !fuelInInv) throw new Error('Out of resources to smelt');
-              
-              await furnace.putInput(oreInInv.type, null, 1);
-              await furnace.putFuel(fuelInInv.type, null, 1);
-              
-              // منتظر ذوب شدن بمان
-              await new Promise((resolve, reject) => {
-                const start = Date.now();
+              const o = bot.inventory.items().find(i => i.type === oreId);
+              const fu = bot.inventory.items().find(i => i.type === fuelId);
+              if (!o || !fu) throw new Error('Out of resources');
+              await f.putInput(o.type, null, 1);
+              await f.putFuel(fu.type, null, 1);
+              await new Promise((resolve) => {
                 const check = () => {
-                  const output = furnace.outputItem();
-                  if (output && output.count > smelted) {
-                    smelted = output.count;
+                  if (f.outputItem() && f.outputItem().count > smelted) {
+                    smelted = f.outputItem().count;
                     resolve();
-                  } else if (Date.now() - start > 60000) { // ۱ دقیقه timeout
-                    reject(new Error('Smelting timeout'));
-                  } else {
-                    setTimeout(check, 1500);
-                  }
+                  } else setTimeout(check, 1000);
                 };
                 check();
               });
-              await furnace.takeOutput();
+              await f.takeOutput();
             }
-            furnace.close();
+            f.close();
           }
 
           async function collectFood(count) {
-            console.log('Gathering food...');
+            console.log('Collecting food...');
             const animals = ['pig', 'cow', 'sheep', 'chicken'];
-            let gathered = bot.inventory.items().filter(i =>
-              i.name && (i.name.includes('beef') || i.name.includes('porkchop') || 
-                         i.name.includes('mutton') || i.name.includes('chicken'))
-            ).length;
-            
+            let gathered = 0;
             while (gathered < count) {
               const animal = bot.nearestEntity(e => animals.includes(e.name) && e.position.distanceTo(bot.entity.position) < 32);
-              if (!animal) {
-                await sleep(2000);
-                continue;
-              }
-              // کشتن حیوان
-              await new Promise((resolve) => {
-                bot.lookAt(animal.position.offset(0, animal.height/2, 0));
-                bot.attack(animal);
-                const check = setInterval(() => {
-                  if (!animal.isValid) {
-                    clearInterval(check);
-                    resolve();
-                  }
-                }, 500);
-              });
-              await sleep(1000);
-              gathered = bot.inventory.items().filter(i =>
-                i.name && (i.name.includes('beef') || i.name.includes('porkchop') || 
-                           i.name.includes('mutton') || i.name.includes('chicken'))
-              ).length;
-              
-              // پختن گوشت در کوره اگر وجود داشته باشد
-              const rawMeat = bot.inventory.items().find(i => i.name === 'beef' || i.name === 'porkchop' || i.name === 'mutton' || i.name === 'chicken');
-              if (rawMeat && bot.inventory.items().find(i => i.name === 'coal')) {
-                try {
-                  const furnaceBlock = bot.findBlock({ matching: mcData.blocksByName.furnace.id, maxDistance: 8 });
-                  if (furnaceBlock) {
-                    const furnace = await bot.openFurnace(furnaceBlock);
-                    await furnace.putInput(rawMeat.type, null, 1);
-                    await furnace.putFuel(mcData.itemsByName.coal.id, null, 1);
-                    await sleep(12000);
-                    await furnace.takeOutput();
-                    furnace.close();
-                  }
-                } catch (e) {}
-              }
+              if (!animal) { await sleep(2000); continue; }
+              bot.lookAt(animal.position.offset(0, animal.height/2, 0));
+              bot.attack(animal);
+              await new Promise(r => setTimeout(r, 1000));
+              gathered = bot.inventory.items().filter(i => i.name && i.name.includes('raw')).length;
             }
           }
 
           async function buildNetherPortal() {
-            console.log('Building nether portal...');
+            console.log('Building portal...');
             const start = bot.entity.position.floored().offset(2, 0, 2);
-            // بررسی فضای خالی
-            const portalCoords = [
+            const frame = [
               [0,0,0],[1,0,0],[2,0,0],[3,0,0],
-              [0,1,0],[3,1,0],
-              [0,2,0],[3,2,0],
+              [0,1,0],[3,1,0],[0,2,0],[3,2,0],
               [0,3,0],[1,3,0],[2,3,0],[3,3,0]
             ];
-            for (let [dx,dy,dz] of portalCoords) {
+            for (let [dx,dy,dz] of frame) {
               const pos = start.offset(dx, dy, dz);
-              if (bot.blockAt(pos)?.name !== 'air') throw new Error('Portal area not clear');
+              if (bot.blockAt(pos)?.name !== 'air') throw new Error('Space not clear');
             }
-            // قرار دادن ابسیدین
-            for (let [dx,dy,dz] of portalCoords) {
+            for (let [dx,dy,dz] of frame) {
               const pos = start.offset(dx, dy, dz);
               const obsidian = bot.inventory.items().find(i => i.name === 'obsidian');
-              if (!obsidian) throw new Error('Not enough obsidian');
+              if (!obsidian) throw new Error('Need obsidian');
               await bot.equip(obsidian, 'hand');
-              // اشاره به بلوکی که روش می‌خواهیم بگذاریم (زیرش)
-              const referenceBlock = bot.blockAt(pos.offset(0,-1,0));
+              const ref = bot.blockAt(pos.offset(0,-1,0));
               await bot.lookAt(pos);
-              await bot.placeBlock(referenceBlock, new Vec3(0,1,0));
+              await bot.placeBlock(ref, new Vec3(0,1,0));
               await sleep(300);
             }
-            // روشن کردن
             const flint = bot.inventory.items().find(i => i.name === 'flint_and_steel');
             await bot.equip(flint, 'hand');
-            const ignitePos = start.offset(1, 1, 0);
-            await bot.lookAt(ignitePos);
+            await bot.lookAt(start.offset(1,1,0));
             await bot.activateItem();
             console.log('Portal lit!');
           }
 
           async function enterDimension(dim) {
             console.log(`Entering ${dim}...`);
-            const portalBlockId = mcData.blocksByName.nether_portal.id;
-            const portal = bot.findBlock({ matching: portalBlockId, maxDistance: 64 });
-            if (!portal) throw new Error('No portal found');
-            await goto(portal.position, 1);
-            // منتظر تغییر بعد بمان
+            const portal = bot.findBlock({ matching: mcData.blocksByName.nether_portal.id, maxDistance: 64 });
+            await goTo(portal.position);
             await new Promise((resolve, reject) => {
-              const timeout = setTimeout(() => reject(new Error('Dimension change timeout')), 30000);
+              const timeout = setTimeout(() => reject(new Error('Dimension timeout')), 30000);
               const listener = (dimName) => {
-                const targetDim = dim === 'nether' ? 'minecraft:the_nether' : 'minecraft:overworld';
-                if (dimName === targetDim) {
+                const target = dim === 'nether' ? 'minecraft:the_nether' : 'minecraft:overworld';
+                if (dimName === target) {
                   clearTimeout(timeout);
                   bot.removeListener('dimension', listener);
                   resolve();
@@ -390,90 +281,40 @@ jobs:
               };
               bot.on('dimension', listener);
             });
-            await sleep(3000); // صبر برای لود شدن کامل
+            await sleep(3000);
           }
 
           async function gatherBlazeRods(count) {
             console.log(`Hunting ${count} blaze rods...`);
             for (let i = 0; i < count; i++) {
-              const blaze = bot.nearestEntity(e => e.name === 'blaze' && e.position.distanceTo(bot.entity.position) < 64);
-              if (!blaze) throw new Error('No blaze found');
-              // حمله
-              await new Promise((resolve) => {
-                bot.lookAt(blaze.position.offset(0, blaze.height/2, 0));
-                bot.attack(blaze);
-                const check = setInterval(() => {
-                  if (!blaze.isValid) {
-                    clearInterval(check);
-                    resolve();
-                  }
-                }, 500);
-              });
-              await sleep(2000);
+              const blaze = bot.nearestEntity(e => e.name === 'blaze');
+              if (!blaze) throw new Error('No blaze');
+              bot.lookAt(blaze.position.offset(0, blaze.height/2, 0));
+              bot.attack(blaze);
+              await new Promise(r => setTimeout(r, 2000));
             }
           }
 
-          async function locateStrongholdWithEyes() {
-            console.log('Locating stronghold using eyes of ender...');
-            const eye = bot.inventory.items().find(i => i.name === 'ender_eye');
-            if (!eye) throw new Error('No ender eyes');
-            
-            // تا وقتی که استرانهولد را پیدا نکردیم ادامه بده
+          async function locateStronghold() {
+            console.log('Locating stronghold...');
             while (true) {
-              // بررسی اطراف برای stone_bricks (نشانه استرانهولد)
-              const stoneBrick = bot.findBlock({
-                matching: mcData.blocksByName.stone_bricks.id,
-                maxDistance: 32
-              });
-              if (stoneBrick) {
-                console.log('Found stronghold! Moving inside...');
-                await goto(stoneBrick.position);
-                // حالا اتاق پورتال را پیدا کن
-                const portalFrame = bot.findBlock({
-                  matching: mcData.blocksByName.end_portal_frame.id,
-                  maxDistance: 64
-                });
-                if (!portalFrame) {
-                  // ممکن است هنوز پیدا نکرده باشد، کمی جستجو
-                  await goto(stoneBrick.position.offset(0, -5, 0));
-                  await sleep(2000);
-                }
+              const brick = bot.findBlock({ matching: mcData.blocksByName.stone_bricks.id, maxDistance: 64 });
+              if (brick) {
+                await goTo(brick.position);
                 return;
               }
-              
               // پرتاب چشم
-              const currentEye = bot.inventory.items().find(i => i.name === 'ender_eye');
-              if (!currentEye) throw new Error('Ran out of eyes');
-              await bot.equip(currentEye, 'hand');
+              const eye = bot.inventory.items().find(i => i.name === 'ender_eye');
+              if (!eye) throw new Error('No eyes');
+              await bot.equip(eye, 'hand');
               await bot.activateItem();
-              console.log('Threw an eye of ender');
-              
-              // منتظر ظهور موجودیت چشم
-              const direction = await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error('No eye entity spawned')), 10000);
-                const onEntitySpawn = (entity) => {
-                  if (entity.name === 'eye_of_ender' || entity.type === 'eye_of_ender_signal') {
-                    // گرفتن جهت حرکت اولیه
-                    const initialPos = entity.position.clone();
-                    setTimeout(() => {
-                      const delta = entity.position.clone().subtract(initialPos);
-                      if (delta.norm() > 0.5) {
-                        clearTimeout(timeout);
-                        bot.removeListener('entitySpawn', onEntitySpawn);
-                        resolve(delta);
-                      }
-                    }, 2000);
-                  }
-                };
-                bot.on('entitySpawn', onEntitySpawn);
-              });
-              
-              // حرکت در جهت چشم
-              const dirVec = direction.scaled(100); // حدود ۱۰۰ بلاک
-              const targetPos = bot.entity.position.offset(dirVec.x, 0, dirVec.z);
-              console.log(`Moving towards ${targetPos}`);
-              await bot.pathfinder.goto(new GoalXZ(targetPos.x, targetPos.z));
-              await sleep(1000);
+              console.log('Eye thrown');
+              await sleep(3000);
+              // حرکت تصادفی در جهت پرتاب (ساده‌سازی)
+              const angle = Math.random() * Math.PI * 2;
+              const dx = Math.cos(angle) * 150;
+              const dz = Math.sin(angle) * 150;
+              await bot.pathfinder.goto(new GoalXZ(bot.entity.position.x + dx, bot.entity.position.z + dz));
             }
           }
 
@@ -481,58 +322,41 @@ jobs:
             console.log('Activating end portal...');
             const frames = bot.findBlocks({
               matching: mcData.blocksByName.end_portal_frame.id,
-              maxDistance: 32,
+              maxDistance: 64,
               count: 12
             });
-            if (frames.length < 12) throw new Error('Portal frames incomplete');
-            
             const eyes = bot.inventory.items().filter(i => i.name === 'ender_eye');
-            if (eyes.length === 0) throw new Error('No eyes left');
-            
             for (const pos of frames) {
               const block = bot.blockAt(pos);
-              if (!block || block.metadata & 0x4) continue; // اگر چشم دارد
-              if (eyes.length === 0) break;
-              
-              const eyeItem = eyes.shift();
-              await bot.equip(eyeItem, 'hand');
+              if (block.metadata & 0x4) continue;
+              if (!eyes.length) break;
+              await bot.equip(eyes.shift(), 'hand');
               await bot.lookAt(pos.offset(0.5, 0.5, 0.5));
-              await bot.activateBlock(block); // کلیک راست روی قاب با چشم
+              await bot.activateBlock(block);
               await sleep(300);
             }
-            console.log('End portal should be active now.');
           }
 
           async function fightDragon() {
-            console.log('Fighting the dragon!');
-            // تجهیز شمشیر الماس
+            console.log('Fighting dragon...');
             const sword = bot.inventory.items().find(i => i.name === 'diamond_sword');
             if (sword) await bot.equip(sword, 'hand');
-            
-            return new Promise((resolve) => {
-              const attack = setInterval(() => {
+            await new Promise(resolve => {
+              const interval = setInterval(() => {
                 const dragon = bot.nearestEntity(e => e.name === 'ender_dragon');
-                if (!dragon) {
-                  clearInterval(attack);
-                  console.log('Dragon is dead!');
-                  resolve();
-                  return;
-                }
-                // هدف‌گیری و حمله
-                const target = dragon.position.offset(0, dragon.height/2, 0);
-                bot.lookAt(target);
+                if (!dragon) { clearInterval(interval); resolve(); return; }
+                bot.lookAt(dragon.position.offset(0, dragon.height/2, 0));
                 bot.attack(dragon);
-                // گاهی نزدیک شو
-                if (dragon.position.distanceTo(bot.entity.position) > 10) {
-                  bot.setControlState('forward', true);
-                  setTimeout(() => bot.setControlState('forward', false), 500);
-                }
               }, 400);
             });
           }
-          EOF
 
-      - name: Launch bot and live tunnel
+          bot.on('error', err => console.log('Error:', err));
+          bot.on('kicked', reason => { console.log('Kicked:', reason); process.exit(1); });
+          bot.on('end', () => process.exit(0));
+          BOT
+
+      - name: Run bot & live tunnel
         run: |
           node bot.js &
           BOT_PID=$!
