@@ -1,4 +1,4 @@
-name: Minecraft Bot (No Token Tunnel)
+name: Minecraft Bot Local Map
 on: [workflow_dispatch]
 
 jobs:
@@ -29,11 +29,19 @@ jobs:
 
       - name: Start Tunnel and Bot
         run: |
-          echo "⚡ در حال راه‌اندازی تونل موقت کلودفلر..."
-          cloudflared tunnel --url http://localhost:3000 &
+          # اجرای تونل در پس‌زمینه و فیلتر کردن لاگ‌ها برای پیدا کردن لینک
+          cloudflared tunnel --url http://localhost:3000 2>&1 | grep --line-buffered -o "https://.*trycloudflare.com" > tunnel_link.txt &
           
-          echo "⏳ ۳ ثانیه صبر برای ایجاد لینک..."
-          sleep 3
+          # اجرای سرور و ربات ماینکرافت
+          node bot.js &
           
-          echo "🤖 در حال روشن کردن بات ماینکرافت..."
-          node bot.js
+          # استراحت کوتاه برای فیکس شدن لینک
+          sleep 5
+          
+          echo "=================================================="
+          echo "🌐 آدرس موقت مانیتورینگ شما آماده است 👇"
+          cat tunnel_link.txt
+          echo "=================================================="
+          
+          # زنده نگه داشتن پروسه برای مانیتور کردن
+          wait
