@@ -1,0 +1,35 @@
+name: Minecraft Bot (No Token Tunnel)
+on: [workflow_dispatch]
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Cloudflare CLI
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+
+      - name: Start Tunnel and Bot
+        run: |
+          echo "⚡ در حال راه‌اندازی تونل موقت کلودفلر..."
+          # اجرای تونل در پس‌زمینه و هدایت ترافیک پورت 3000
+          cloudflared tunnel --url http://localhost:3000 &
+          
+          echo "⏳ ۳ ثانیه صبر برای ایجاد لینک..."
+          sleep 3
+          
+          echo "🤖 در حال روشن کردن بات ماینکرافت..."
+          node bot.js
