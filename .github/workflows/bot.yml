@@ -13,6 +13,11 @@ jobs:
         with:
           node-version: '18'
 
+      - name: Install System Dependencies for Canvas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+
       - name: Install dependencies
         run: npm install
 
@@ -25,7 +30,6 @@ jobs:
       - name: Start Tunnel and Bot
         run: |
           echo "⚡ در حال راه‌اندازی تونل موقت کلودفلر..."
-          # اجرای تونل در پس‌زمینه و هدایت ترافیک پورت 3000
           cloudflared tunnel --url http://localhost:3000 &
           
           echo "⏳ ۳ ثانیه صبر برای ایجاد لینک..."
