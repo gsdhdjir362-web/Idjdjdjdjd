@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "main": "bot.js",
   "dependencies": {
-    "mineflayer": "^4.20.0",
-    "mineflayer-pathfinder": "^2.4.4",
-    "mineflayer-pvp": "^2.1.0",
-    "prismarine-viewer": "^2.12.0"
+    "mineflayer": "latest",
+    "mineflayer-pathfinder": "latest",
+    "mineflayer-pvp": "latest",
+    "prismarine-viewer": "latest"
   }
 }
