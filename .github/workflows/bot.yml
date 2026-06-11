@@ -1,50 +1,222 @@
-name: Minecraft Bot Web Dashboard
-on: [workflow_dispatch]
+name: PVP_HS Minecraft Bot Live
+on:
+  workflow_dispatch:
 
 jobs:
-  run-bot:
+  bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 360   # حداکثر ۶ ساعت (قابل تغییر)
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout repository (اختیاری)
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: Install System Dependencies for Canvas
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+          sudo apt-get install -y netcat-openbsd screen
+          npm install -g mineflayer mineflayer-pathfinder mineflayer-collectblock prismarine-viewer
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Install Cloudflare CLI
-        run: |
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          # cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-      - name: Run Tunnel and Dashboard Bot
+          # mcrcon (برای ارسال فرمان به سرور)
+          wget -q https://github.com/Tiiffi/mcrcon/releases/download/v0.7.2/mcrcon-0.7.2-linux-x86-64.tar.gz
+          tar -xzf mcrcon-0.7.2-linux-x86-64.tar.gz
+          chmod +x mcrcon
+          sudo mv mcrcon /usr/local/bin/
+
+      - name: Setup Minecraft Server
         run: |
-          echo "⚡ در حال راه‌اندازی تونل موقت کلودفلر..."
-          cloudflared tunnel --url http://localhost:3000 2>&1 | grep --line-buffered -o "https://.*trycloudflare.com" > tunnel_link.txt &
-          
-          echo "⏳ ۳ ثانیه صبر برای آماده‌سازی اولیه..."
-          sleep 3
-          
-          echo "🤖 استارت زدن بات و داشبورد مانیتورینگ..."
+          mkdir -p server
+          cd server
+          # دانلود PaperMC 1.20.4
+          wget -q https://api.papermc.io/v2/projects/paper/versions/1.20.4/builds/497/downloads/paper-1.20.4-497.jar -O paper.jar
+          echo "eula=true" > eula.txt
+
+          cat > server.properties <<EOF
+          server-port=25565
+          online-mode=false
+          enable-command-block=true
+          spawn-protection=0
+          difficulty=hard
+          gamemode=survival
+          enable-rcon=true
+          rcon.port=25575
+          rcon.password=secret
+          broadcast-rcon-to-ops=false
+          view-distance=10
+          allow-nether=true
+          level-name=world
+          EOF
+
+          screen -dmS mcserver java -Xmx2G -Xms1G -jar paper.jar nogui
+          echo "Waiting for Minecraft server to start..."
+          while ! grep -q "Done" logs/latest.log 2>/dev/null; do sleep 2; done
+          echo "Server is up!"
+
+      - name: Prepare world (ores, end portal, OP bot)
+        run: |
+          # آماده‌سازی منطقه‌ی ماین با سنگ‌های معدنی
+          mcrcon -H localhost -P 25575 -p secret "setblock 0 70 0 diamond_ore"
+          mcrcon -H localhost -P 25575 -p secret "setblock 1 70 0 iron_ore"
+          mcrcon -H localhost -P 25575 -p secret "setblock 2 70 0 gold_ore"
+          mcrcon -H localhost -P 25575 -p secret "setblock 0 70 1 coal_ore"
+          mcrcon -H localhost -P 25575 -p secret "setblock 1 70 1 redstone_ore"
+
+          # ایجاد یک پورتال اِند در نزدیکی اسپاون
+          mcrcon -H localhost -P 25575 -p secret "setblock 5 70 5 end_portal"
+
+          # اطمینان از وجود اژدها در اِند
+          mcrcon -H localhost -P 25575 -p secret "execute in minecraft:the_end run kill @e[type=ender_dragon]"
+          mcrcon -H localhost -P 25575 -p secret "execute in minecraft:the_end run summon ender_dragon 0 80 0"
+
+          # اپراتور کردن بات
+          mcrcon -H localhost -P 25575 -p secret "op pvp_HS"
+          echo "World prepared"
+
+      - name: Create bot script
+        run: |
+          cat > bot.js << 'BOTSCRIPT'
+          const mineflayer = require('mineflayer');
+          const pathfinder = require('mineflayer-pathfinder').pathfinder;
+          const Movements = require('mineflayer-pathfinder').Movements;
+          const { GoalBlock } = require('mineflayer-pathfinder').goals;
+          const collectBlock = require('mineflayer-collectblock').plugin;
+          const viewer = require('prismarine-viewer').mineflayer;
+
+          const bot = mineflayer.createBot({
+            host: 'localhost',
+            port: 25565,
+            username: 'pvp_HS',
+            auth: 'offline'
+          });
+
+          bot.loadPlugin(pathfinder);
+          bot.loadPlugin(collectBlock);
+
+          bot.on('kicked', console.log);
+          bot.on('error', console.log);
+
+          bot.once('spawn', async () => {
+            console.log('Bot spawned!');
+
+            // راه‌اندازی نمایش زنده روی پورت ۳۰۰۰
+            viewer(bot, { port: 3000, firstPerson: true });
+
+            const mcData = require('minecraft-data')(bot.version);
+            const movements = new Movements(bot, mcData);
+            bot.pathfinder.setMovements(movements);
+
+            // کمی صبر برای لود کامل دنیا
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            await startMining(mcData);
+          });
+
+          async function startMining(mcData) {
+            const ores = ['diamond_ore', 'iron_ore', 'gold_ore', 'coal_ore', 'redstone_ore'];
+            for (const ore of ores) {
+              const block = bot.findBlock({
+                matching: mcData.blocksByName[ore].id,
+                maxDistance: 50
+              });
+              if (block) {
+                try {
+                  await bot.collectBlock.collect(block);
+                  console.log(`Collected ${ore}`);
+                } catch (err) {
+                  console.log(`Failed to collect ${ore}: ${err.message}`);
+                }
+              }
+            }
+
+            // گرفتن آیتم‌ها و آماده‌سازی برای نبرد با اژدها
+            console.log('Gearing up for the dragon fight...');
+            await bot.chat('/effect give pvp_HS minecraft:resistance infinite 5 true');
+            await bot.chat('/effect give pvp_HS minecraft:strength infinite 2 true');
+            await bot.chat('/give pvp_HS minecraft:diamond_sword');
+            await bot.chat('/give pvp_HS minecraft:diamond_chestplate');
+            await bot.chat('/give pvp_HS minecraft:diamond_leggings');
+            await bot.chat('/give pvp_HS minecraft:diamond_boots');
+
+            // حرکت به سمت پورتال اِند
+            console.log('Heading to the End portal...');
+            const portalGoal = new GoalBlock(5, 70, 5);
+            await bot.pathfinder.goto(portalGoal);
+            console.log('Jumping into the portal...');
+
+            // اگر به طور طبیعی وارد اِند نشد، با فرمان جا‌به‌جا شود
+            setTimeout(() => {
+              if (bot.game.dimension !== 'minecraft:the_end') {
+                console.log('Fallback: teleporting to the End via command...');
+                bot.chat('/execute in minecraft:the_end run tp pvp_HS 0 80 0');
+              }
+            }, 20000);
+
+            // تشخیص ورود به بعد اِند
+            bot.on('dimension', (dim) => {
+              if (dim === 'minecraft:the_end') {
+                console.log('Entered the End! Starting dragon fight...');
+                fightDragon();
+              }
+            });
+          }
+
+          function fightDragon() {
+            const attackInterval = setInterval(() => {
+              const dragon = bot.nearestEntity(entity => entity.name === 'ender_dragon');
+              if (!dragon) {
+                console.log('Dragon killed! Mission complete.');
+                clearInterval(attackInterval);
+                setTimeout(() => process.exit(0), 2000);
+                return;
+              }
+              bot.lookAt(dragon.position.offset(0, dragon.height / 2, 0));
+              bot.attack(dragon);
+            }, 500);
+          }
+
+          process.on('SIGINT', () => {
+            bot.quit();
+            process.exit();
+          });
+          BOTSCRIPT
+
+      - name: Run bot and create live tunnel
+        run: |
+          # اجرای بات در پس‌زمینه
           node bot.js &
-          
-          echo "⏳ ۵ ثانیه صبر برای فیکس شدن لینک..."
+          BOT_PID=$!
+
+          # صبر برای راه‌اندازی سرور prismarine-viewer
+          sleep 10
+
+          # تونل موقت Cloudflare
+          cloudflared tunnel --url http://localhost:3000 > cloudflared.log 2>&1 &
+          CF_PID=$!
           sleep 5
-          
-          echo "=================================================="
-          echo "🌐 آدرس موقت مانیتورینگ شما آماده است 👇"
-          cat tunnel_link.txt
-          echo "=================================================="
-          
-          # نگه داشتن جاب برای ادامه کار بات و مانیتورینگ
-          wait
+
+          # استخراج و نمایش لینک لایو
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' cloudflared.log | head -n 1)
+          echo ""
+          echo "============================================="
+          echo "🔴 LIVE VIEW: $TUNNEL_URL"
+          echo "============================================="
+          echo ""
+
+          # منتظر پایان کار بات بمان
+          wait $BOT_PID
+          echo "Bot finished, closing tunnel."
+          kill $CF_PID 2>/dev/null || true
