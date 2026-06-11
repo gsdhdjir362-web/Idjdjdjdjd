@@ -1,27 +1,41 @@
+const mcServer = require('flying-squid');
 const mineflayer = require('mineflayer');
 const { pathfinder } = require('mineflayer-pathfinder');
 const { plugin: pvp } = require('mineflayer-pvp');
 const { mineflayer: viewer } = require('prismarine-viewer');
 
-console.log('در حال اتصال به سرور اگزوراتون...');
+console.log('🚀 در حال ساخت مپ و سرور لوکال روی گیت‌هاب...');
 
-const bot = mineflayer.createBot({
-  host: 'ttttttttttttt5.exaroton.me',
-  port: 40418,
-  username: 'PvP_HS'
+// ۱. ساخت سرور داخلی
+const server = mcServer.createMCServer({
+  'motd': 'Local Test Server',
+  'port': 25565,
+  'max-players': 10,
+  'online-mode': false,
+  'logging': false, // لاگ‌های سرور رو خاموش کردیم تا شلوغ نشه
+  'gameMode': 1,
+  'difficulty': 1,
+  'worldFolder': 'world',
+  'version': '1.16.5'
 });
 
-bot.loadPlugin(pathfinder);
-bot.loadPlugin(pvp);
-
-bot.once('spawn', () => {
-  console.log('⚔️ بات PvP_HS با موفقیت وارد سرور شد!');
+// ۲. ورود بات به سرور ساخته شده بعد از ۲ ثانیه
+setTimeout(() => {
+  console.log('🤖 در حال ورود بات به مپ داخلی...');
   
-  // راه‌اندازی سیستم مانیتورینگ دید بات
-  viewer(bot, { port: 3000, firstPerson: true });
-  console.log('🖥️ سرور مانیتورینگ روی پورت 3000 فعال شد.');
-});
+  const bot = mineflayer.createBot({
+    host: 'localhost',
+    port: 25565,
+    username: 'PvP_HS'
+  });
 
-// مدیریت ارورها برای جلوگیری از کرش ناگهانی اکشن
-bot.on('error', (err) => console.log('❌ ارور بات:', err));
-bot.on('kicked', (reason) => console.log('🚪 بات از سرور کیک شد:', reason));
+  bot.loadPlugin(pathfinder);
+  bot.loadPlugin(pvp);
+
+  bot.once('spawn', () => {
+    console.log('⚔️ بات PvP_HS وارد مپ داخلی شد و آماده است!');
+    viewer(bot, { port: 3000, firstPerson: true });
+  });
+
+  bot.on('error', (err) => console.log('❌ ارور بات:', err));
+}, 2000);
