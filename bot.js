@@ -6,7 +6,7 @@ const { mineflayer: viewer } = require('prismarine-viewer');
 console.log('در حال اتصال به سرور اگزوراتون...');
 
 const bot = mineflayer.createBot({
-  host: 'bdhdhdjom.exaroton.me',
+  host: '6b6t.org',
   port: 28588,
   username: 'PvP_HS'
 });
