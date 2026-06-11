@@ -1,4 +1,4 @@
-name: Minecraft Bot Local Map
+name: Minecraft Bot Local Server
 on: [workflow_dispatch]
 
 jobs:
@@ -27,21 +27,35 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-      - name: Start Tunnel and Bot
+      - name: Download & Configure Minecraft Server
         run: |
-          # اجرای تونل در پس‌زمینه و فیلتر کردن لاگ‌ها برای پیدا کردن لینک
+          echo "⬇️ در حال دانلود سرور رسمی ماینکرافت..."
+          wget -q https://launcher.mojang.com/v1/objects/1b553e2631a927c3437eeb313413b0881c940611/server.jar -O server.jar
+          
+          echo "⚙️ در حال پذیرفتن قوانین EULA و تنظیم آفلاین مود..."
+          echo "eula=true" > eula.txt
+          echo "online-mode=false" > server.properties
+          echo "difficulty=easy" >> server.properties
+          echo "spawn-monsters=true" >> server.properties
+
+      - name: Run Server, Tunnel, and Bot
+        run: |
+          echo "☕ در حال روشن کردن سرور ماینکرافت در پس‌زمینه..."
+          java -Xmx1024M -Xms1024M -jar server.jar nogui > /dev/null 2>&1 &
+          
+          echo "⚡ در حال راه‌اندازی تونل موقت کلودفلر..."
           cloudflared tunnel --url http://localhost:3000 2>&1 | grep --line-buffered -o "https://.*trycloudflare.com" > tunnel_link.txt &
           
-          # اجرای سرور و ربات ماینکرافت
-          node bot.js &
+          echo "⏳ ۱۵ ثانیه صبر برای آماده‌سازی کامل سرور و تونل..."
+          sleep 15
           
-          # استراحت کوتاه برای فیکس شدن لینک
-          sleep 5
+          echo "🤖 استارت زدن بات ماینکرافت..."
+          node bot.js &
           
           echo "=================================================="
           echo "🌐 آدرس موقت مانیتورینگ شما آماده است 👇"
           cat tunnel_link.txt
           echo "=================================================="
           
-          # زنده نگه داشتن پروسه برای مانیتور کردن
+          # نگه داشتن جاب برای ادامه کار بات و مانیتورینگ
           wait
