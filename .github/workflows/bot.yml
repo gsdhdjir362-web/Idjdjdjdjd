@@ -1,4 +1,4 @@
-name: PVP_HS Super Smart Vertical
+name: PVP_HS Viewer
 on:
   workflow_dispatch:
 
@@ -35,15 +35,12 @@ jobs:
                       mineflayer-pathfinder@2.4.5 \
                       prismarine-viewer@1.28.0 \
                       minecraft-data@3.63.0 \
-                      vec3@0.1.8 \
-                      express@4.19.2 \
-                      http-proxy@1.18.1
+                      vec3@0.1.8
 
       - name: Start Vanilla Server
         run: |
           mkdir -p server
           cd server
-          # نسخه 1.20.1 چون prismarine-viewer رسماً اینو ساپورت می‌کنه (1.20.4 مشکل‌ساز بود)
           LATEST_BUILD=$(curl -s https://api.papermc.io/v2/projects/paper/versions/1.20.1 | jq '.builds[-1]')
           echo "Using Paper build: $LATEST_BUILD"
           wget -q "https://api.papermc.io/v2/projects/paper/versions/1.20.1/builds/${LATEST_BUILD}/downloads/paper-1.20.1-${LATEST_BUILD}.jar" -O paper.jar
@@ -70,109 +67,15 @@ jobs:
             sleep 2
           done
 
-      - name: Create overlay (mobile fullscreen + vertical)
-        run: |
-          mkdir -p public
-          cat > public/overlay.html << 'OVERLAY'
-          <!DOCTYPE html>
-          <html><head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-          <title>Bot Live</title>
-          <style>
-            html,body{margin:0;padding:0;height:100%;width:100%;background:#000;overflow:hidden;font-family:sans-serif}
-            iframe{border:0;width:100vw;height:100vh;display:block;background:#000}
-            #fsBtn{position:fixed;bottom:16px;right:16px;z-index:9999;
-              background:rgba(0,0,0,0.75);color:#fff;border:2px solid #4af;
-              padding:14px 18px;border-radius:10px;font-size:16px;cursor:pointer;
-              -webkit-tap-highlight-color:transparent}
-            #fsBtn:active{background:#4af}
-            #status{position:fixed;top:8px;left:8px;z-index:9999;
-              background:rgba(0,0,0,0.6);color:#0f0;padding:6px 10px;
-              border-radius:6px;font-size:12px;font-family:monospace}
-            #reload{position:fixed;top:8px;right:8px;z-index:9999;
-              background:rgba(0,0,0,0.6);color:#ff0;padding:6px 10px;
-              border-radius:6px;font-size:12px;cursor:pointer}
-          </style>
-          </head><body>
-            <div id="status">🟢 LIVE</div>
-            <div id="reload">🔄</div>
-            <button id="fsBtn">⛶ Fullscreen</button>
-            <iframe id="game" src="/viewer/" allow="fullscreen"></iframe>
-          <script>
-            const btn = document.getElementById('fsBtn');
-            const frame = document.getElementById('game');
-            const reload = document.getElementById('reload');
-
-            btn.addEventListener('click', async () => {
-              try {
-                const el = document.documentElement;
-                if (el.requestFullscreen) await el.requestFullscreen();
-                else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-                if (screen.orientation && screen.orientation.lock) {
-                  try { await screen.orientation.lock('portrait'); } catch(e){}
-                }
-              } catch(e) { alert('Fullscreen not supported: '+e.message); }
-            });
-
-            reload.addEventListener('click', () => {
-              frame.src = '/viewer/?t=' + Date.now();
-            });
-          </script>
-          </body></html>
-          OVERLAY
-
       - name: Create smart bot script
         run: |
           cat > bot.js << 'BOT'
           const mineflayer = require('mineflayer');
           const pathfinderPkg = require('mineflayer-pathfinder');
           const { pathfinder, Movements } = pathfinderPkg;
-          const { GoalNear, GoalBlock, GoalXZ, GoalY } = pathfinderPkg.goals;
+          const { GoalNear } = pathfinderPkg.goals;
           const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
           const Vec3 = require('vec3').Vec3;
-          const express = require('express');
-          const http = require('http');
-          const httpProxy = require('http-proxy');
-          const path = require('path');
-
-          // ---------- overlay + پراکسی WebSocket-aware روی پورت 8080 ----------
-          const overlayApp = express();
-
-          // پراکسی به viewer روی 3000 (هم HTTP هم WebSocket)
-          const proxy = httpProxy.createProxyServer({
-            target: 'http://127.0.0.1:3000',
-            ws: true,
-            changeOrigin: true
-          });
-          proxy.on('error', (err, req, res) => {
-            try {
-              if (res && res.writeHead) { res.writeHead(502); res.end('viewer offline: ' + err.message); }
-            } catch (e) {}
-          });
-
-          // صفحه اصلی = overlay
-          overlayApp.get('/', (req, res) =>
-            res.sendFile(path.join(__dirname, 'public', 'overlay.html'))
-          );
-
-          // هر چیزی زیر /viewer رو (با حذف prefix) به viewer بفرست
-          overlayApp.use('/viewer', (req, res) => {
-            req.url = req.url || '/';
-            proxy.web(req, res);
-          });
-
-          // بقیه مسیرها (assetهایی که viewer از root می‌خواد) هم به viewer
-          overlayApp.use((req, res) => {
-            proxy.web(req, res);
-          });
-
-          const overlayServer = http.createServer(overlayApp);
-          // هندل WebSocket upgrade — این چیزیه که قبلاً نبود و باعث صفحه سیاه می‌شد
-          overlayServer.on('upgrade', (req, socket, head) => {
-            proxy.ws(req, socket, head);
-          });
-          overlayServer.listen(8080, () => console.log('[OVERLAY] up on :8080'));
 
           // ---------- ساخت بات ----------
           const bot = mineflayer.createBot({
@@ -191,7 +94,6 @@ jobs:
 
           function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-          // ---------- مدیریت خطا سراسری ----------
           process.on('unhandledRejection', err => console.log('[UNHANDLED]', err.message));
           process.on('uncaughtException', err => console.log('[UNCAUGHT]', err.message));
 
@@ -199,7 +101,6 @@ jobs:
           bot.on('kicked', r => console.log('[KICKED]', r));
           bot.on('end', () => { console.log('[END]'); setTimeout(()=>process.exit(0), 2000); });
 
-          // ---------- اتو ایت ----------
           function startAutoEat() {
             setInterval(async () => {
               try {
@@ -207,15 +108,11 @@ jobs:
                 const food = bot.inventory.items().find(i =>
                   /cooked|beef|porkchop|mutton|chicken|bread|apple|carrot|potato/.test(i.name)
                 );
-                if (food) {
-                  await bot.equip(food, 'hand');
-                  await bot.consume();
-                }
+                if (food) { await bot.equip(food, 'hand'); await bot.consume(); }
               } catch(e) {}
             }, 5000);
           }
 
-          // ---------- اتو دفاع ----------
           function startAutoDefend() {
             setInterval(async () => {
               try {
@@ -232,7 +129,6 @@ jobs:
             }, 800);
           }
 
-          // ---------- spawn ----------
           bot.once('spawn', async () => {
             console.log('[SPAWN] Bot in world');
             mcData = require('minecraft-data')(bot.version);
@@ -244,15 +140,15 @@ jobs:
             movements.allowSprinting = true;
             bot.pathfinder.setMovements(movements);
 
-            // viewer — حالت سوم‌شخص پایدارتره و کمتر صفحه سیاه میده
+            // ---- viewer مستقیم روی پورت 8080، دید اول‌شخص ----
             try {
               mineflayerViewer(bot, {
-                port: 3000,
-                firstPerson: false,
-                viewDistance: 4,
+                port: 8080,
+                firstPerson: true,
+                viewDistance: 6,
                 antiAlias: false
               });
-              console.log('[VIEWER] up on :3000');
+              console.log('[VIEWER] up on :8080 (first-person)');
             } catch(e) {
               console.log('[VIEWER ERR]', e.message);
             }
@@ -264,18 +160,10 @@ jobs:
             await runSpeedrun();
           });
 
-          // ---------- اجرای امن هر مرحله ----------
           async function safeStep(name, fn, critical=false) {
             console.log(`[STEP] ${name}`);
-            try {
-              await fn();
-              console.log(`[OK] ${name}`);
-              return true;
-            } catch(e) {
-              console.log(`[FAIL] ${name}: ${e.message}`);
-              if (critical) throw e;
-              return false;
-            }
+            try { await fn(); console.log(`[OK] ${name}`); return true; }
+            catch(e) { console.log(`[FAIL] ${name}: ${e.message}`); if (critical) throw e; return false; }
           }
 
           async function runSpeedrun() {
@@ -309,10 +197,9 @@ jobs:
             await safeStep('stronghold',       () => locateStronghold());
             await safeStep('end portal',       () => activateEndPortal());
             await safeStep('dragon',           () => fightDragon());
-            console.log('🏆 Run finished (success or partial). Keeping viewer alive.');
+            console.log('Run finished. Keeping viewer alive.');
           }
 
-          // ---------- مسیریابی امن ----------
           async function safeGoTo(pos, range=2, timeoutMs=45000) {
             const goal = new GoalNear(pos.x, pos.y, pos.z, range);
             return Promise.race([
@@ -320,26 +207,17 @@ jobs:
               new Promise((_,rej)=>setTimeout(()=>rej(new Error('path timeout')), timeoutMs))
             ]);
           }
-
           async function tryGoTo(pos, range=2) {
             try { await safeGoTo(pos, range); return true; }
             catch(e) { console.log('  path:', e.message); return false; }
           }
 
-          // ---------- جمع‌آوری ----------
           async function gatherAnyLogsSmart(count) {
-            const logIds = mcData.blocksArray
-              .filter(b => b.name.endsWith('_log'))
-              .map(b => b.id);
-            let collected = 0;
-            let explores = 0;
+            const logIds = mcData.blocksArray.filter(b => b.name.endsWith('_log')).map(b => b.id);
+            let collected = 0, explores = 0;
             while (collected < count && explores < 8) {
               const block = bot.findBlock({ matching: logIds, maxDistance: 48 });
-              if (!block) {
-                await exploreRandom(20);
-                explores++;
-                continue;
-              }
+              if (!block) { await exploreRandom(20); explores++; continue; }
               const ok = await tryGoTo(block.position, 2);
               if (!ok) { explores++; continue; }
               try { await bot.dig(bot.blockAt(block.position)); collected++; }
@@ -356,13 +234,9 @@ jobs:
             while (collected < count && explores < 10) {
               const block = bot.findBlock({ matching: ids, maxDistance: 48 });
               if (!block) {
-                if (names.some(n => /iron|diamond|coal/.test(n))) {
-                  await digDown(5);
-                } else {
-                  await exploreRandom(20);
-                }
-                explores++;
-                continue;
+                if (names.some(n => /iron|diamond|coal/.test(n))) await digDown(5);
+                else await exploreRandom(20);
+                explores++; continue;
               }
               const ok = await tryGoTo(block.position, 2);
               if (!ok) { explores++; continue; }
@@ -388,7 +262,6 @@ jobs:
             await tryGoTo(t, 3);
           }
 
-          // ---------- کرفت ----------
           async function craftItemSimple(name) {
             const item = mcData.itemsByName[name];
             if (!item) throw new Error('unknown item: '+name);
@@ -402,7 +275,6 @@ jobs:
             const item = mcData.itemsByName[name];
             if (!item) throw new Error('unknown: '+name);
             if (bot.inventory.items().find(i => i.name === name)) return;
-
             let table = craftingTableBlock;
             if (!table || !bot.blockAt(table.position) || bot.blockAt(table.position).name !== 'crafting_table') {
               table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 32 });
@@ -419,8 +291,7 @@ jobs:
             for (let i=0; i<need; i++) {
               const log = bot.inventory.items().find(it => it.name.endsWith('_log'));
               if (!log) break;
-              const plankName = log.name.replace('_log','_planks');
-              const plankItem = mcData.itemsByName[plankName];
+              const plankItem = mcData.itemsByName[log.name.replace('_log','_planks')];
               if (!plankItem) continue;
               const r = bot.recipesFor(plankItem.id, null, 1, null);
               if (r.length) await bot.craft(r[0], 1, null).catch(()=>{});
@@ -433,8 +304,7 @@ jobs:
               const planks = bot.inventory.items().find(it => it.name.endsWith('_planks'));
               if (!planks) break;
               const r = bot.recipesFor(stick.id, null, 1, null);
-              if (r.length) await bot.craft(r[0], 1, null).catch(()=>{});
-              else break;
+              if (r.length) await bot.craft(r[0], 1, null).catch(()=>{}); else break;
             }
           }
 
@@ -458,14 +328,9 @@ jobs:
             throw new Error('no place to put '+itemName);
           }
 
-          async function placeCraftingTable() {
-            craftingTableBlock = await placeBlockSafely('crafting_table');
-          }
-          async function placeFurnace() {
-            furnaceBlock = await placeBlockSafely('furnace');
-          }
+          async function placeCraftingTable() { craftingTableBlock = await placeBlockSafely('crafting_table'); }
+          async function placeFurnace() { furnaceBlock = await placeBlockSafely('furnace'); }
 
-          // ---------- ذوب ----------
           async function smeltItems(oreNames, count, fuelName) {
             const f = furnaceBlock && bot.blockAt(furnaceBlock.position)?.name === 'furnace'
               ? furnaceBlock
@@ -487,12 +352,9 @@ jobs:
                 await sleep(1500);
               }
               try { await furnace.takeOutput(); } catch(e) {}
-            } finally {
-              furnace.close();
-            }
+            } finally { furnace.close(); }
           }
 
-          // ---------- غذا ----------
           async function collectFood(count) {
             const animals = ['pig','cow','sheep','chicken'];
             const start = Date.now();
@@ -513,7 +375,6 @@ jobs:
             }
           }
 
-          // ---------- پورتال ندر ----------
           async function buildNetherPortal() {
             const base = bot.entity.position.floored().offset(2,0,0);
             const frame = [
@@ -532,15 +393,10 @@ jobs:
               await bot.equip(obs,'hand');
               let ref = bot.blockAt(pos.offset(0,-1,0));
               let face = new Vec3(0,1,0);
-              if (!ref || ref.name === 'air') {
-                ref = bot.blockAt(pos.offset(-1,0,0));
-                face = new Vec3(1,0,0);
-              }
+              if (!ref || ref.name === 'air') { ref = bot.blockAt(pos.offset(-1,0,0)); face = new Vec3(1,0,0); }
               if (!ref || ref.name === 'air') continue;
-              try {
-                await bot.lookAt(pos.offset(0.5,0.5,0.5));
-                await bot.placeBlock(ref, face);
-              } catch(e) { console.log('  obs place:', e.message); }
+              try { await bot.lookAt(pos.offset(0.5,0.5,0.5)); await bot.placeBlock(ref, face); }
+              catch(e) { console.log('  obs place:', e.message); }
               await sleep(300);
             }
             const flint = bot.inventory.items().find(i => i.name === 'flint_and_steel');
@@ -557,10 +413,7 @@ jobs:
             await tryGoTo(portal.position, 0);
             await new Promise((resolve,reject) => {
               const t = setTimeout(()=>reject(new Error('dim timeout')), 45000);
-              const onDim = name => {
-                if (name.includes(target)) { clearTimeout(t); resolve(); }
-              };
-              bot.on('respawn', () => onDim('minecraft:'+target));
+              bot.on('respawn', () => { clearTimeout(t); resolve(); });
             });
             await sleep(3000);
           }
@@ -601,8 +454,7 @@ jobs:
 
           async function activateEndPortal() {
             const frames = bot.findBlocks({
-              matching: mcData.blocksByName.end_portal_frame.id,
-              maxDistance: 64, count: 12
+              matching: mcData.blocksByName.end_portal_frame.id, maxDistance: 64, count: 12
             });
             for (const p of frames) {
               const b = bot.blockAt(p);
@@ -637,19 +489,19 @@ jobs:
         run: |
           node bot.js > bot.log 2>&1 &
           BOT_PID=$!
-          echo "Waiting for bot spawn + viewer to come up..."
-          sleep 30
+          echo "Waiting for bot spawn + viewer..."
+          sleep 35
           echo "----- bot.log so far -----"
           cat bot.log
           echo "--------------------------"
-          # تونل به 8080 (overlay با دکمه fullscreen)
+          # تونل مستقیم به 8080 (خودِ viewer) — بدون پراکسی، WebSocket خودکار کار می‌کنه
           cloudflared tunnel --no-autoupdate --url http://localhost:8080 > cloudflared.log 2>&1 &
           CF_PID=$!
           sleep 12
           TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' cloudflared.log | head -n1)
           echo ""
           echo "============================================="
-          echo "🔴 LIVE VIEW (موبایل + دکمه Fullscreen):"
+          echo "LIVE VIEW (first-person):"
           echo "$TUNNEL_URL"
           echo "============================================="
           echo ""
