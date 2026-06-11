@@ -8,6 +8,6 @@
     "mineflayer-pvp": "latest",
     "prismarine-viewer": "latest",
     "canvas": "latest",
-    "node-minecraft-protocol": "latest"
+    "minecraft-protocol": "latest"
   }
 }
