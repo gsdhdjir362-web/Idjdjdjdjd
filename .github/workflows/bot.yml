@@ -248,7 +248,7 @@ jobs:
             try {
               mineflayerViewer(bot, {
                 port: 3000,
-                firstPerson: false,
+                firstPerson: true,
                 viewDistance: 4,
                 antiAlias: false
               });
