@@ -6,8 +6,6 @@
     "mineflayer": "latest",
     "mineflayer-pathfinder": "latest",
     "mineflayer-pvp": "latest",
-    "prismarine-viewer": "latest",
-    "canvas": "latest",
-    "minecraft-protocol": "latest"
+    "express": "latest"
   }
 }
